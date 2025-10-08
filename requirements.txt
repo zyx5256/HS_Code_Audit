@@ -1,0 +1,2 @@
+pymupdf>=1.23.0
+ocrmypdf>=14.0.0
