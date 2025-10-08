@@ -4,28 +4,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-HS Code 审计工具，从 PDF 发票中提取**货物号（Item Number）**及其对应的 **HS Code**。
+HS Code 审计工具，从 PDF 发票中提取货物信息，并与 Excel 中的标准 HS Code 对比，自动发现不一致项。
 
 ### 代码架构（按数据流）
 ```
-get_text_from_pdf.py          # CLI 入口（22 行）
-pdf_extractor/
-  ├── reader.py               # PDF 文本读取（PyMuPDF + OCR）
-  ├── preprocessor.py         # 文本预处理（换行合并、清理）
-  ├── extractor.py            # 内容抽取算法（截断、规则匹配、发票解析）
-  ├── validator.py            # 数据校验（三层校验）
-  ├── writer.py               # 输出模块（JSON/CSV/JSONL）
-  └── cli.py                  # 命令行接口（协调各模块）
+audit.py                      # HS Code 审计主程序（统一入口）
+├── pdf_extractor/
+│   ├── reader.py             # PDF 文本读取（PyMuPDF + OCR）
+│   ├── preprocessor.py       # 文本预处理（换行合并、清理）
+│   ├── extractor.py          # 内容抽取算法（截断、规则匹配、发票解析）
+│   ├── validator.py          # 数据校验（三层校验）
+│   ├── writer.py             # 输出模块（JSON/CSV/JSONL）
+│   └── cli.py                # 命令行接口（协调各模块）
+├── excel_extractor.py        # Excel 提取模块（Item → HScode 映射）
+└── comparator.py             # 对比模块（验证 HS Code 一致性）
+
+get_text_from_pdf.py          # PDF 提取工具（独立使用）
 ```
 
-**数据流**：
+**审计流程**：
 ```
-PDF 文件
-  → [reader] 读取原始文本/行
-  → [preprocessor] 合并换行、清理文本
-  → [extractor] 按规则/算法提取结构化数据
-  → [validator] 三层校验
-  → [writer] 格式化输出（JSON/CSV/JSONL）
+PDF 发票                      Excel 映射表
+  ↓                              ↓
+[pdf_extractor]              [excel_extractor]
+  ↓                              ↓
+提取货物+HScode              提取 Item→HScode 映射
+  ↓                              ↓
+  └──────→ [comparator] ←────────┘
+                ↓
+          对比验证（按 U11 Code）
+                ↓
+          错误报告（CSV + 控制台）
 ```
 
 ### 业务目标
@@ -51,7 +60,26 @@ pip install -r requirements.txt
 
 ## 常用命令
 
-### 1. 自动提取（推荐）
+### 1. HS Code 审计（推荐 - 完整流程）
+```bash
+# 基础用法：对比 PDF 发票和 Excel 映射表
+python audit.py invoice.pdf hscode_mapping.xlsx
+
+# 自定义列名
+python audit.py invoice.pdf hscode_mapping.xlsx --item-col "Item" --hscode-col "HScode USA "
+
+# 指定输出文件
+python audit.py invoice.pdf hscode_mapping.xlsx -o errors.csv
+
+# Debug 模式（保存中间 JSON 文件）
+python audit.py invoice.pdf hscode_mapping.xlsx --debug --debug-dir ./debug
+```
+
+**输出说明**：
+- 如果有错误：打印错误列表 + 生成 CSV 报告
+- 如果没有错误：输出 "✓ Verification successful! All HScodes match."
+
+### 2. PDF 提取（独立使用）
 ```bash
 # 自动提取发票货物+三层校验
 python get_text_from_pdf.py auto invoice.pdf --out result.json
@@ -60,7 +88,16 @@ python get_text_from_pdf.py auto invoice.pdf --out result.json
 python get_text_from_pdf.py auto invoice.pdf --ocr chi_sim+eng --debug
 ```
 
-### 2. 探索模式（分析结构）
+### 3. Excel 提取（独立使用）
+```bash
+# 提取 Item 和 HScode 映射
+python excel_extractor.py hscode_mapping.xlsx -o mapping.json
+
+# 自定义列名
+python excel_extractor.py file.xlsx --item-col "Item" --hscode-col "HScode USA "
+```
+
+### 4. 探索模式（分析 PDF 结构）
 ```bash
 # 导出带坐标的行（用于分析提取规律）
 python get_text_from_pdf.py dump invoice.pdf --mode lines --out lines.csv
@@ -75,13 +112,13 @@ python get_text_from_pdf.py dump invoice.pdf --merge --truncate "SAY U.S.DOLLARS
 python get_text_from_pdf.py dump invoice.pdf --pages 1,2 --out lines.csv
 ```
 
-### 3. 规则提取（定制化）
+### 5. 规则提取（定制化）
 ```bash
 # 基于规则文件按页码+行号精确提取
 python get_text_from_pdf.py extract invoice.pdf --rules rules.json --out result.json
 ```
 
-### 4. 基础文本提取（兼容旧用法）
+### 6. 基础文本提取（兼容旧用法）
 ```bash
 # 预览 PDF 文本
 python get_text_from_pdf.py invoice.pdf

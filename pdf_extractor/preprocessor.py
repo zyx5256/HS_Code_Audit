@@ -78,10 +78,10 @@ def split_wide_lines(rows: List[Dict]) -> List[Dict]:
                     result.append(row1)
                     result.append(row2)
 
-                    # 直接打印到屏幕（处理编码问题）
-                    print(
+                    # 使用logger而不是print，避免Windows终端编码问题
+                    logger.debug(
                         f"[SPLIT-WIDE] Page {row['page']}, Line {row['index']}: "
-                        f"width={width:.2f}px -> '{text1}' | '{text2}'"
+                        f"width={width:.2f}px -> split into 2 parts"
                     )
                 else:
                     result.append(row)
@@ -169,10 +169,10 @@ def split_abnormal_height_lines(rows: List[Dict]) -> List[Dict]:
                 result.append(row1)
                 result.append(row2)
 
-                # 直接打印到屏幕，确保用户看到
-                print(
+                # 使用logger而不是print，避免Windows终端编码问题
+                logger.debug(
                     f"[SPLIT] Page {row['page']}, Line {row['index']}: "
-                    f"height={height:.2f}px -> '{text1}' | '{text2}'"
+                    f"height={height:.2f}px -> split into 2 lines"
                 )
             else:
                 result.append(row)

@@ -1,2 +1,4 @@
 pymupdf>=1.23.0
 ocrmypdf>=14.0.0
+pandas>=2.0.0
+openpyxl>=3.0.0

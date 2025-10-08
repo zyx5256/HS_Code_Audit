@@ -1,3 +1,6 @@
 /test_data/
 /.idea
 nul
+/output/
+__pycache__/
+*.pyc

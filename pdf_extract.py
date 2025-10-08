@@ -11,19 +11,19 @@ import sys
 import logging
 import argparse
 
-from .reader import (
+from pdf_extractor.reader import (
     prepare_ocr_pdf,
     read_pdf_elements,
     ensure_file_exists,
 )
-from .preprocessor import merge_adjacent_lines, clean_text, split_abnormal_height_lines, split_wide_lines
-from .extractor import (
+from pdf_extractor.preprocessor import merge_adjacent_lines, clean_text, split_abnormal_height_lines, split_wide_lines
+from pdf_extractor.extractor import (
     truncate_at_marker,
     extract_by_rules,
     extract_invoice_items,
 )
-from .validator import validate_invoice_data
-from .writer import write_auto, print_auto, print_jsonl
+from pdf_extractor.validator import validate_invoice_data
+from pdf_extractor.writer import write_auto, print_auto, print_jsonl
 
 logger = logging.getLogger("pdf_text")
 DEFAULT_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -124,7 +124,7 @@ def run_extract(args) -> None:
 
     # 如果内容为空，尝试 OCR
     if not rows or all(not r.get("text", "").strip() for r in rows):
-        logger.info("PDF 内容为空，尝试 OCR...")
+        logger.info("PDF content is empty, trying OCR...")
         src = prepare_ocr_pdf(args.pdf, "chi_sim+eng")
         rows = read_pdf_elements(src, mode="lines")
 
@@ -154,7 +154,7 @@ def run_auto(args) -> None:
 
     # 如果内容为空，尝试 OCR
     if not rows or all(not r.get("text", "").strip() for r in rows):
-        logger.info("PDF 内容为空，尝试 OCR...")
+        logger.info("PDF content is empty, trying OCR...")
         src = prepare_ocr_pdf(args.pdf, "chi_sim+eng")
         rows = read_pdf_elements(src, mode="lines")
 

@@ -233,10 +233,8 @@ def extract_invoice_goods_items(
                     lines.insert(i + 1, after_space)
                     lines[i] = before_space
                     end_idx += 1  # 更新结束索引
-                    try:
-                        print(f"[SPLIT-INVOICE] Line {i}: '{line_text}' -> '{before_space}' | '{after_space}'")
-                    except UnicodeEncodeError:
-                        print(f"[SPLIT-INVOICE] Line {i}: (contains non-ASCII characters)")
+                    # 使用logger而不是print，避免Windows终端编码问题
+                    logger.debug(f"[SPLIT-INVOICE] Line {i}: split by 2+ spaces")
 
             final_customers = lines[i].strip()
             u11_code = lines[i + 1].strip()
