@@ -48,15 +48,54 @@ PDF 发票                      Excel 映射表
 
 ## 依赖安装
 
+### 基础依赖（必需）
 ```bash
 pip install -r requirements.txt
 ```
 
-可选 OCR 支持（需要系统安装 Tesseract）：
+### OCR 支持（可选 - 处理扫描件PDF时需要）
+
+**方法1：使用 Chocolatey（推荐）**
 ```bash
-# Windows: 下载 Tesseract 安装包并配置 PATH
-# https://github.com/UB-Mannheim/tesseract/wiki
+# 安装 Chocolatey 包管理器（如未安装）
+# 访问：https://chocolatey.org/install
+
+# 安装 OCR 依赖
+choco install ghostscript tesseract
 ```
+
+**方法2：手动安装**
+
+1. **安装 Ghostscript**（PDF处理工具）
+   - 下载地址：https://ghostscript.com/releases/gsdnld.html
+   - 选择 `Ghostscript 10.x for Windows (64 bit)` 下载
+   - 安装后添加到系统PATH：`C:\Program Files\gs\gs10.xx.x\bin`
+
+2. **安装 Tesseract OCR**（文字识别引擎）
+   - 下载地址：https://github.com/UB-Mannheim/tesseract/wiki
+   - 下载 `tesseract-ocr-w64-setup-5.x.x.exe`
+   - 安装时**勾选"简体中文语言包"（chi_sim）**
+   - 安装后添加到系统PATH：`C:\Program Files\Tesseract-OCR`
+
+3. **配置系统环境变量（PATH）**
+   ```
+   右键"此电脑" → 属性 → 高级系统设置 → 环境变量
+   → 系统变量 → Path → 编辑 → 新建
+   添加：
+   C:\Program Files\gs\gs10.02.1\bin
+   C:\Program Files\Tesseract-OCR
+   ```
+
+4. **验证安装**（需重启命令行窗口）
+   ```bash
+   gs --version
+   tesseract --version
+   ```
+
+**注意：**
+- 有文本层的PDF不需要OCR即可处理
+- OCR仅在遇到扫描件（无文本层）时自动触发
+- 如果不安装OCR，扫描件PDF会报错并跳过
 
 ## 常用命令
 

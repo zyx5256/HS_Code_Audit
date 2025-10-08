@@ -37,6 +37,37 @@ class HSCodeError:
                 f"  PDF HScode: {self.pdf_hscode}\n"
                 f"  Status: Not found in Excel"
             )
+        elif self.error_type == "extraction_failed":
+            return (
+                f"[EXTRACTION FAILED] {self.excel_hscode}"
+            )
+        elif self.error_type == "missing_hscode":
+            location = ""
+            if self.block_index > 0:
+                location = f"  Location: Block {self.block_index}"
+                if self.item_index > 0:
+                    location += f", Item {self.item_index}"
+                location += "\n"
+            return (
+                f"[MISSING_HSCODE] {self.excel_hscode}\n"
+                f"{location}"
+                f"  U11 Code: {self.u11_code}"
+            )
+        elif self.error_type.startswith("validation_"):
+            # excel_hscode 字段存储了完整的校验错误消息
+            location = ""
+            if self.block_index > 0:
+                location = f"  Location: Block {self.block_index}"
+                if self.item_index > 0:
+                    location += f", Item {self.item_index}"
+                location += "\n"
+
+            type_label = self.error_type.replace("validation_", "").upper()
+            return (
+                f"[VALIDATION_{type_label}] {self.excel_hscode}\n"
+                f"{location}"
+                f"  U11 Code: {self.u11_code}"
+            )
         else:
             return (
                 f"[MISMATCH] U11 Code: {self.u11_code}\n"
@@ -61,7 +92,8 @@ class HSCodeError:
 def compare_hscode(
     pdf_data: Dict,
     excel_mapping: Dict,
-    normalize_hscode: bool = True
+    normalize_hscode: bool = True,
+    validation_errors: List = None
 ) -> Tuple[List[HSCodeError], List[HSCodeError]]:
     """
     对比 PDF 发票数据和 Excel HScode 映射
@@ -70,12 +102,20 @@ def compare_hscode(
         pdf_data: PDF 提取的发票数据（包含 goods_blocks）
         excel_mapping: Excel 提取的映射字典（u11_code -> {hs_code, row}）
         normalize_hscode: 是否规范化 HScode 格式（去除点号后比较）
+        validation_errors: PDF校验错误列表（这些item会被跳过）
 
     返回:
         (不匹配错误列表, 未找到错误列表)
     """
     mismatch_errors = []
     not_found_errors = []
+
+    # 收集validation失败的(block_index, item_index)
+    skip_items = set()
+    if validation_errors:
+        for err in validation_errors:
+            if err.error_type == 'validation_item':  # 只跳过item级校验错误
+                skip_items.add((err.block_index, err.item_index))
 
     goods_blocks = pdf_data.get('goods_blocks', [])
 
@@ -88,6 +128,12 @@ def compare_hscode(
         for item_idx, item in enumerate(items):
             # item_index 从 1 开始
             item_index = item_idx + 1
+
+            # 跳过validation失败的item
+            if (block_index, item_index) in skip_items:
+                logger.info(f"Skipping Block {block_index} Item {item_index} due to validation error")
+                continue
+
             u11_code = item.get('u11_code', '').strip()
 
             if not u11_code:

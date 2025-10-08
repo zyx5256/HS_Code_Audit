@@ -77,7 +77,7 @@ def save_errors_to_csv(errors: list, output_path: str):
     将错误列表保存为 CSV 文件
 
     参数:
-        errors: HSCodeError 对象列表（包含 mismatch 和 not_found）
+        errors: HSCodeError 对象列表（包含 mismatch、not_found 和 validation_*）
         output_path: 输出 CSV 文件路径
     """
     if not errors:
@@ -97,26 +97,89 @@ def save_errors_to_csv(errors: list, output_path: str):
         writer.writeheader()
 
         for error in errors:
-            writer.writerow({
-                'U11 Code': error.u11_code,
-                'Block Index': error.block_index,
-                'Item Index': error.item_index,
-                'PDF HScode': error.pdf_hscode,
-                'Excel HScode': error.excel_hscode or '',
+            is_validation = error.error_type.startswith('validation_') or error.error_type == 'missing_hscode'
+            is_extraction_failed = error.error_type == 'extraction_failed'
+
+            row = {
+                'U11 Code': '' if (is_validation and error.u11_code == 'N/A') or is_extraction_failed else error.u11_code,
+                'Block Index': error.block_index if error.block_index > 0 else '',
+                'Item Index': error.item_index if error.item_index > 0 else '',
+                'PDF HScode': '' if is_validation or is_extraction_failed else error.pdf_hscode,
+                'Excel HScode': '' if (is_validation or error.error_type == 'not_found' or is_extraction_failed) else error.excel_hscode,
                 'Excel Row': error.excel_row or '',
                 'Error Type': error.error_type
-            })
+            }
+            writer.writerow(row)
 
     logger.info(f"Error report saved to: {output_path}")
 
 
-def print_errors(mismatch_errors: list, not_found_errors: list):
+def parse_validation_errors(validation_errors: list) -> list:
+    """
+    解析 PDF 校验错误字符串，转换为 HSCodeError 对象
+
+    参数:
+        validation_errors: 校验错误字符串列表（来自 validator.py）
+
+    返回:
+        HSCodeError 对象列表
+    """
+    import re
+    errors = []
+
+    for i, msg in enumerate(validation_errors):
+        # 尝试从消息中提取 Block 和 Item 信息
+        # 格式示例：
+        # "[WARNING] Block 1 (HS Code '8481.80.9090'), Item 1 (U11: YCV5-43GTLA-1-U3): amount mismatch! ..."
+        # "[WARNING] Block 1 (HS Code '8481.80.9090'): subtotal mismatch! ..."
+        # "[WARNING] Global total_quantity mismatch! ..."
+        # "[WARNING] Goods '...' at block 7 does not have H.S Code!"
+
+        block_match = re.search(r'[Bb]lock (\d+)', msg)  # 支持 Block 和 block
+        item_match = re.search(r'Item (\d+)', msg)
+        u11_match = re.search(r'U11:\s*([^\)]+)', msg)
+        hscode_match = re.search(r"HS Code '([^']+)'", msg)
+
+        block_index = int(block_match.group(1)) if block_match else 0
+        item_index = int(item_match.group(1)) if item_match else 0
+        u11_code = u11_match.group(1).strip() if u11_match else "N/A"
+        pdf_hscode = hscode_match.group(1) if hscode_match else ""
+
+        # 判断校验错误类型
+        if 'does not have H.S Code' in msg:
+            error_type = "missing_hscode"
+        elif 'Global' in msg:
+            error_type = "validation_global"
+        elif item_match or u11_match:
+            error_type = "validation_item"
+        elif block_match:
+            error_type = "validation_block"
+        else:
+            error_type = "validation_block"  # 默认为block级
+
+        # 创建 HSCodeError 对象
+        error = HSCodeError(
+            u11_code=u11_code,
+            block_index=block_index,
+            item_index=item_index,
+            pdf_hscode=pdf_hscode,
+            excel_hscode=msg,  # 将完整错误消息存储在 excel_hscode 字段（仅用于打印）
+            excel_row=None,
+            error_type=error_type
+        )
+        errors.append(error)
+
+    return errors
+
+
+def print_errors(mismatch_errors: list, not_found_errors: list, validation_errors: list = None):
     """
     打印错误到控制台
 
     参数:
         mismatch_errors: HScode 不匹配错误列表
         not_found_errors: 未找到错误列表
+        validation_errors: PDF 校验错误列表
     """
     if mismatch_errors:
         print(f"\n{'='*70}")
@@ -132,6 +195,18 @@ def print_errors(mismatch_errors: list, not_found_errors: list):
         print(f"{'='*70}")
         for error in not_found_errors:
             print(f"\n{error}")
+
+    if validation_errors:
+        print(f"\n{'='*70}")
+        print(f"PDF Validation Errors ({len(validation_errors)}):")
+        print(f"{'='*70}")
+        for error in validation_errors:
+            try:
+                print(f"\n{error}")
+            except UnicodeEncodeError:
+                # Windows终端无法打印中文，使用ASCII安全版本
+                error_str = str(error).encode('ascii', 'replace').decode('ascii')
+                print(f"\n{error_str}")
 
 
 def main():
@@ -227,7 +302,36 @@ def main():
             debug_level=debug_level
         )
 
-        # 2. 从 Excel 提取映射
+        # 2. 检查提取结果
+        total_items = sum(len(block.get('items', [])) for block in pdf_data.get('goods_blocks', []))
+
+        # 如果没有提取到任何item，认为提取失败
+        if total_items == 0:
+            logger.error("PDF extraction failed: No items extracted")
+            extraction_error = HSCodeError(
+                u11_code="",
+                block_index=0,
+                item_index=0,
+                pdf_hscode="",
+                excel_hscode="PDF extraction failed: No items found in the invoice",
+                excel_row=None,
+                error_type="extraction_failed"
+            )
+
+            # 直接输出错误并退出
+            csv_path = os.path.join(output_dir, "result.csv")
+            save_errors_to_csv([extraction_error], csv_path)
+
+            print(f"\n{'='*70}")
+            print(f"Audit Summary:")
+            print(f"  Total items: 0")
+            print(f"  Extraction failed: Unable to extract any items from PDF")
+            print(f"{'='*70}")
+            print(f"\nError report saved to: {csv_path}")
+
+            sys.exit(1)
+
+        # 3. 从 Excel 提取映射
         logger.info(f"Extracting mapping from Excel: {args.excel}")
         excel_mapping = extract_item_hscode_mapping(
             args.excel,
@@ -242,17 +346,28 @@ def main():
                 json.dump(excel_mapping, f, ensure_ascii=False, indent=2)
             logger.info(f"Excel mapping saved to: {excel_json_path}")
 
-        # 3. 对比
-        logger.info("Comparing PDF data with Excel mapping...")
-        mismatch_errors, not_found_errors = compare_hscode(pdf_data, excel_mapping)
+        # 4. 提取 PDF 校验错误
+        pdf_validation_errors_raw = pdf_data.get('errors', [])
+        pdf_validation_errors = parse_validation_errors(pdf_validation_errors_raw) if pdf_validation_errors_raw else []
 
-        # 4. 输出结果
-        total_items = sum(len(block.get('items', [])) for block in pdf_data.get('goods_blocks', []))
-        all_errors = mismatch_errors + not_found_errors
+        if pdf_validation_errors:
+            logger.warning(f"PDF validation found {len(pdf_validation_errors)} error(s)")
+
+        # 5. 对比（跳过validation失败的item）
+        logger.info("Comparing PDF data with Excel mapping...")
+        mismatch_errors, not_found_errors = compare_hscode(
+            pdf_data,
+            excel_mapping,
+            validation_errors=pdf_validation_errors
+        )
+
+        # 6. 输出结果
+        all_errors = mismatch_errors + not_found_errors + pdf_validation_errors
 
         print(f"\n{'='*70}")
         print(f"Audit Summary:")
         print(f"  Total items: {total_items}")
+        print(f"  PDF validation errors: {len(pdf_validation_errors)}")
         print(f"  HScode mismatches: {len(mismatch_errors)}")
         print(f"  Not found in Excel: {len(not_found_errors)}")
         print(f"  Total errors: {len(all_errors)}")
@@ -260,10 +375,10 @@ def main():
 
         if all_errors:
             # 打印错误
-            print_errors(mismatch_errors, not_found_errors)
+            print_errors(mismatch_errors, not_found_errors, pdf_validation_errors)
 
             # 保存 CSV 到 output 目录（合并所有错误）
-            csv_path = os.path.join(output_dir, "errors.csv")
+            csv_path = os.path.join(output_dir, "result.csv")
             save_errors_to_csv(all_errors, csv_path)
             print(f"\nError report saved to: {csv_path}")
 
