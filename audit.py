@@ -24,7 +24,8 @@ def extract_pdf_data(
     output_dir: str,
     truncate_marker: str = "SAY U.S.DOLLARS",
     ocr_lang: str = None,
-    debug_level: int = None
+    debug_level: int = None,
+    column_config: str = "default"
 ) -> dict:
     """
     从 PDF 提取发票数据（调用 pdf_extract）
@@ -35,6 +36,7 @@ def extract_pdf_data(
         truncate_marker: 截断标记（默认 "SAY U.S.DOLLARS"）
         ocr_lang: OCR 语言（如 "chi_sim+eng"）
         debug_level: Debug 级别（None=保存JSON, 0-3=在该阶段停止并保存CSV）
+        column_config: 列配置键名（默认 "default"）
 
     返回:
         提取的发票数据（字典格式）
@@ -49,13 +51,15 @@ def extract_pdf_data(
 
     # 构造参数对象
     class Args:
-        pdf = pdf_path
-        out = output_path
-        truncate = truncate_marker
-        debug = debug_level  # 传入 debug level（None 或 0-3）
-        ocr = ocr_lang
+        pass
 
     args = Args()
+    args.pdf = pdf_path
+    args.out = output_path
+    args.truncate = truncate_marker
+    args.debug = debug_level  # 传入 debug level（None 或 0-3）
+    args.ocr = ocr_lang
+    args.column_config = column_config  # 传入列配置键名
 
     # 调用提取函数
     run_auto(args)
@@ -84,6 +88,12 @@ def save_errors_to_csv(errors: list, output_path: str):
         logger.info("No errors to save")
         return
 
+    # 排序：先按block_index，再按item_index（validation错误的index可能为0，排在后面）
+    sorted_errors = sorted(errors, key=lambda e: (
+        e.block_index if e.block_index > 0 else 9999,
+        e.item_index if e.item_index > 0 else 9999
+    ))
+
     with open(output_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.DictWriter(f, fieldnames=[
             'U11 Code',
@@ -96,7 +106,7 @@ def save_errors_to_csv(errors: list, output_path: str):
         ])
         writer.writeheader()
 
-        for error in errors:
+        for error in sorted_errors:
             is_validation = error.error_type.startswith('validation_') or error.error_type == 'missing_hscode'
             is_extraction_failed = error.error_type == 'extraction_failed'
 
@@ -111,7 +121,7 @@ def save_errors_to_csv(errors: list, output_path: str):
             }
             writer.writerow(row)
 
-    logger.info(f"Error report saved to: {output_path}")
+    logger.info(f"Report saved to: {output_path}")
 
 
 def parse_validation_errors(validation_errors: list) -> list:
@@ -243,6 +253,11 @@ def main():
         '--ocr',
         help='OCR language for scanned PDFs (e.g., "chi_sim+eng")'
     )
+    parser.add_argument(
+        '--column-config',
+        default='default',
+        help='Column configuration key name in column_config.json (default: "default")'
+    )
 
     args = parser.parse_args()
 
@@ -299,7 +314,8 @@ def main():
             output_dir=output_dir,
             truncate_marker=args.truncate,
             ocr_lang=args.ocr,
-            debug_level=debug_level
+            debug_level=debug_level,
+            column_config=args.column_config
         )
 
         # 2. 检查提取结果
@@ -373,12 +389,14 @@ def main():
         print(f"  Total errors: {len(all_errors)}")
         print(f"{'='*70}")
 
+        # 保存 CSV 到 output 目录
+        csv_path = os.path.join(output_dir, "result.csv")
+
         if all_errors:
             # 打印错误
             print_errors(mismatch_errors, not_found_errors, pdf_validation_errors)
 
-            # 保存 CSV 到 output 目录（合并所有错误）
-            csv_path = os.path.join(output_dir, "result.csv")
+            # 保存 CSV（包含错误数据）
             save_errors_to_csv(all_errors, csv_path)
             print(f"\nError report saved to: {csv_path}")
 
@@ -386,17 +404,20 @@ def main():
         else:
             print("\n✓ Verification successful! All HScodes match.")
 
-            # 保存成功结果
-            result_path = os.path.join(output_dir, "result.json")
-            with open(result_path, 'w', encoding='utf-8') as f:
-                json.dump({
-                    "status": "success",
-                    "total_items": total_items,
-                    "pdf_file": args.pdf,
-                    "excel_file": args.excel,
-                    "timestamp": timestamp
-                }, f, ensure_ascii=False, indent=2)
-            logger.info(f"Result saved to: {result_path}")
+            # 保存空 CSV（只有表头）
+            with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    'U11 Code',
+                    'Block Index',
+                    'Item Index',
+                    'PDF HScode',
+                    'Excel HScode',
+                    'Excel Row',
+                    'Error Type'
+                ])
+                writer.writeheader()
+            logger.info(f"Result saved to: {csv_path}")
+            print(f"\nResult saved to: {csv_path}")
 
             sys.exit(0)
 

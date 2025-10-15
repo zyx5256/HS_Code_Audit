@@ -142,7 +142,7 @@ def compare_hscode(
 
             # 在 Excel 映射中查找
             if u11_code not in excel_mapping:
-                logger.warning(f"U11 Code '{u11_code}' 未在 Excel 中找到 (Block {block_index} Item {item_index})")
+                logger.warning(f"U11 Code '{u11_code}' not found in Excel (Block {block_index} Item {item_index})")
                 error = HSCodeError(
                     u11_code=u11_code,
                     block_index=block_index,

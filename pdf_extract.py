@@ -80,6 +80,11 @@ def setup_parser() -> argparse.ArgumentParser:
             default="SAY U.S.DOLLARS",
             help="Truncate marker (default: 'SAY U.S.DOLLARS', use empty string to disable)"
         )
+        p.add_argument(
+            "--column-config",
+            default="default",
+            help="Column configuration key name in column_config.json (default: 'default')"
+        )
 
     # extract subcommand
     extract_parser = subparsers.add_parser(
@@ -199,8 +204,14 @@ def run_auto(args) -> None:
 
     lines = [r["text"] for r in rows]
 
-    # 5. 提取发票货物信息
-    groups, global_qty, global_usd, extraction_errors = extract_invoice_items(lines, debug=False)
+    # 5. 提取发票货物信息（传入 pdf_path 和 rows 以启用表格提取）
+    groups, global_qty, global_usd, extraction_errors = extract_invoice_items(
+        lines,
+        debug=False,
+        pdf_path=args.pdf,
+        rows=rows,
+        column_config=args.column_config
+    )
 
     # 5. 校验
     validation_errors = validate_invoice_data(groups, global_qty, global_usd)
