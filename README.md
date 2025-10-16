@@ -1,4 +1,4 @@
-# CLAUDE.md
+# README.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -28,7 +28,7 @@ PDF 发票                      Excel 映射表
   ↓                              ↓
 [pdf_extractor]              [excel_extractor]
   ↓                              ↓
-提取货物+HScode              提取 Item→HScode 映射
+提取货物U11→HScode              提取货物U11→HScode
   ↓                              ↓
   └──────→ [comparator] ←────────┘
                 ↓
