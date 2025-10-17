@@ -233,8 +233,8 @@ def main():
     )
     parser.add_argument(
         '--hscode-col',
-        default='HScode USA ',
-        help='HScode column name in Excel (default: "HScode USA ")'
+        default='HScode USA',
+        help='HScode column name in Excel (default: "HScode USA")'
     )
     parser.add_argument(
         '--debug',

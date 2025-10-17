@@ -194,9 +194,61 @@ def extract_table_rectangles(page) -> List[Dict]:
     return rectangles
 
 
+def find_header_region_bounds(page) -> Optional[Tuple[float, float]]:
+    """
+    找到表头区域的上下边界（使用业务逻辑标记）
+
+    表头区域定义：
+    - 上边界：第一次出现 "SHIPPED TO" 或 "Shipped by" 的 y 坐标
+    - 下边界：第一次出现 "DESCRIPTION OF GOODS" 的 y 坐标
+
+    Args:
+        page: PyMuPDF page 对象
+
+    Returns:
+        (upper_bound_y, lower_bound_y) 元组，未找到返回 None
+    """
+    words = page.get_text("words")
+
+    # 找上边界：SHIPPED TO 或 Shipped by
+    upper_y = None
+    for w in words:
+        text_upper = w[4].upper()
+        if 'SHIPPED' in text_upper or 'SHIP' in text_upper:
+            # 检查附近词语是否构成完整短语
+            nearby = [w2[4] for w2 in words if abs(w2[1] - w[1]) < 3]
+            nearby_text = ' '.join(nearby).upper()
+            if 'SHIPPED' in nearby_text and ('TO' in nearby_text or 'BY' in nearby_text):
+                upper_y = w[1]
+                logger.info(f"[TABLE-REGION] Found upper bound at y={upper_y:.2f}, text: '{' '.join(nearby)}'")
+                break
+
+    # 找下边界：DESCRIPTION OF GOODS
+    lower_y = None
+    for w in words:
+        text_upper = w[4].upper()
+        if 'DESCRIPTION' in text_upper or 'GOODS' in text_upper:
+            # 检查附近词语
+            nearby = [w2[4] for w2 in words if abs(w2[1] - w[1]) < 3]
+            nearby_text = ' '.join(nearby).upper()
+            if 'DESCRIPTION' in nearby_text and 'GOODS' in nearby_text:
+                lower_y = w[1]
+                logger.info(f"[TABLE-REGION] Found lower bound at y={lower_y:.2f}, text: '{' '.join(nearby)}'")
+                break
+
+    if upper_y is not None and lower_y is not None:
+        logger.info(f"[TABLE-REGION] Header region: y=[{upper_y:.2f}, {lower_y:.2f}], height={lower_y - upper_y:.2f}")
+        return (upper_y, lower_y)
+    else:
+        logger.warning(f"[TABLE-REGION] Cannot find header region bounds (upper={upper_y}, lower={lower_y})")
+        return None
+
+
 def find_header_row_y(page) -> Optional[float]:
     """
     找到表头行的 y 坐标（搜索 "U11 CODE"）
+
+    注意：此函数保留用于向后兼容，新代码应使用 find_header_region_bounds
 
     Args:
         page: PyMuPDF page 对象
@@ -211,33 +263,50 @@ def find_header_row_y(page) -> Optional[float]:
             nearby = [w2[4] for w2 in words if abs(w2[1] - w[1]) < 3]
             nearby_text = ' '.join(nearby)
             if 'U11' in nearby_text and 'CODE' in nearby_text:
-                return w[1]  # y 坐标
+                header_y = w[1]
+                logger.info(f"[TABLE-HEADER] Found header row at y={header_y:.2f}, keyword: '{w[4]}' at ({w[0]:.2f}, {w[1]:.2f})")
+                return header_y
     return None
 
 
-def identify_columns_from_config(page, header_y: float, column_fields: List[str], tolerance: float = 10) -> Dict[str, Dict]:
+def identify_columns_from_config(page, column_fields: List[str], header_region: Optional[Tuple[float, float]] = None) -> Dict[str, Dict]:
     """
     从配置文件识别列定义（基于竖线分隔 + 配置的列顺序）
 
     Args:
         page: PyMuPDF page 对象
-        header_y: 表头行 y 坐标
         column_fields: 列字段名列表（按顺序），如 ["customer", "u11_code", ...]
-        tolerance: 容忍像素
+        header_region: 表头区域的上下边界 (upper_y, lower_y)，如果为 None 则自动查找
 
     Returns:
         {field_name: {'x0': float, 'x1': float}, ...}
     """
     rectangles = extract_table_rectangles(page)
 
-    # 提取竖线（width < 2）作为列分隔
-    vertical_lines = [r for r in rectangles if (r['x1'] - r['x0']) < 2 and abs(r['y0'] - header_y) < tolerance]
+    # 确定表头区域边界
+    if header_region is None:
+        header_region = find_header_region_bounds(page)
+        if header_region is None:
+            logger.error("Cannot find header region, unable to identify columns")
+            return {}
+
+    upper_y, lower_y = header_region
+    logger.info(f"[COLUMN-DETECTION] Using header region: y=[{upper_y:.2f}, {lower_y:.2f}]")
+
+    # 提取竖线（width < 2）在表头区域内
+    vertical_lines = [r for r in rectangles
+                      if (r['x1'] - r['x0']) < 2 and upper_y <= r['y0'] <= lower_y]
+
+    logger.info(f"[COLUMN-DETECTION] Found {len(vertical_lines)} vertical lines in header region")
+
     if not vertical_lines:
         # 回退到旧方法：使用单元格矩形
-        logger.warning("No vertical lines found near header, falling back to cell rectangles")
-        header_rects = [r for r in rectangles if abs(r['y0'] - header_y) < tolerance]
+        logger.warning("No vertical lines found in header region, falling back to cell rectangles")
+        header_rects = [r for r in rectangles if upper_y <= r['y0'] <= lower_y]
         header_rects = [r for r in header_rects if 5 < (r['x1'] - r['x0']) < 150]
         header_rects.sort(key=lambda r: r['x0'])
+
+        logger.info(f"[COLUMN-DETECTION] Found {len(header_rects)} cell rectangles in header region")
     else:
         # 使用竖线定义列边界
         vertical_lines.sort(key=lambda r: r['x0'])
@@ -247,18 +316,21 @@ def identify_columns_from_config(page, header_y: float, column_fields: List[str]
             if not unique_x or abs(line['x0'] - unique_x[-1]) > 2:
                 unique_x.append(line['x0'])
 
+        logger.info(f"[COLUMN-DETECTION] Found {len(unique_x)} unique vertical lines (after dedup)")
+
         # 相邻竖线之间定义一列
         header_rects = []
         for i in range(len(unique_x) - 1):
             header_rects.append({
                 'x0': unique_x[i],
                 'x1': unique_x[i + 1],
-                'y0': header_y,
-                'y1': header_y + 20
+                'y0': upper_y,
+                'y1': lower_y
             })
 
     # 直接用配置顺序映射列（不再识别文本）
     columns = {}
+    logger.info(f"[COLUMN-DETECTION] Identifying {len(header_rects)} columns in header region")
     for col_idx, rect in enumerate(header_rects):
         # 如果配置里定义了这一列的字段名，用配置的名称
         if col_idx < len(column_fields):
@@ -272,13 +344,78 @@ def identify_columns_from_config(page, header_y: float, column_fields: List[str]
             'x1': rect['x1']
         }
 
-    logger.info(f"Identified {len(columns)} columns from config: {list(columns.keys())}")
+        # 输出每列的详细信息
+        logger.info(f"[COLUMN-DETECTION]   Column {col_idx}: '{field_name}' -> x=[{rect['x0']:.2f}, {rect['x1']:.2f}] width={rect['x1'] - rect['x0']:.2f}")
+
+    logger.info(f"[COLUMN-DETECTION] Total {len(columns)} columns identified: {list(columns.keys())}")
     return columns
+
+
+def extract_horizontal_lines(rectangles: List[Dict], start_y: float, end_y: float) -> List[float]:
+    """
+    提取横线的 y 坐标（用于精确定位数据行）
+
+    Args:
+        rectangles: 矩形列表
+        start_y: 起始 y 坐标
+        end_y: 结束 y 坐标
+
+    Returns:
+        排序后的横线 y 坐标列表
+    """
+    # 横线特征：高度很小（height < 2），宽度较大（width > 50）
+    horizontal_lines = [r for r in rectangles
+                        if start_y <= r['y0'] <= end_y and
+                        (r['y1'] - r['y0']) < 2 and
+                        (r['x1'] - r['x0']) > 50]
+
+    # 提取 y 坐标并去重（合并相近的横线）
+    y_coords = []
+    for line in sorted(horizontal_lines, key=lambda r: r['y0']):
+        if not y_coords or abs(line['y0'] - y_coords[-1]) > 2:
+            y_coords.append(line['y0'])
+
+    return y_coords
+
+
+def cluster_rows_by_horizontal_lines(rectangles: List[Dict], horizontal_lines: List[float]) -> List[Tuple[float, List[Dict]]]:
+    """
+    使用横线分隔行（更精确的方法）
+
+    相邻两条横线之间的区域 = 一行数据
+
+    Args:
+        rectangles: 矩形列表
+        horizontal_lines: 横线 y 坐标列表（已排序）
+
+    Returns:
+        [(row_y, [rect, ...]), ...]
+    """
+    rows = []
+
+    # 跳过第一条横线（block 顶部边界），从第二条开始
+    # 每两条横线之间定义一行
+    for i in range(len(horizontal_lines) - 1):
+        upper_line = horizontal_lines[i]
+        lower_line = horizontal_lines[i + 1]
+
+        # 行的 y 坐标取中间值
+        row_y = (upper_line + lower_line) / 2
+
+        # 提取这一行的所有单元格（在两条横线之间）
+        row_cells = [r for r in rectangles
+                     if upper_line <= r['y0'] <= lower_line and
+                     5 < (r['x1'] - r['x0']) < 150]
+
+        if row_cells:
+            rows.append((row_y, row_cells))
+
+    return rows
 
 
 def cluster_rows_by_y(rectangles: List[Dict], start_y: float, end_y: float, tolerance: float = 2) -> List[Tuple[float, List[Dict]]]:
     """
-    按 y 坐标聚类矩形成行
+    按 y 坐标聚类矩形成行（旧方法，作为回退）
 
     Args:
         rectangles: 矩形列表
@@ -312,7 +449,7 @@ def cluster_rows_by_y(rectangles: List[Dict], start_y: float, end_y: float, tole
     return rows
 
 
-def extract_cell_text(words: List[Tuple], cell_rect: Dict, tolerance: float = 2) -> str:
+def extract_cell_text(words: List[Tuple], cell_rect: Dict, tolerance: float = 2, debug_log: bool = False) -> str:
     """
     从 words 中提取矩形内的文字
 
@@ -320,6 +457,7 @@ def extract_cell_text(words: List[Tuple], cell_rect: Dict, tolerance: float = 2)
         words: page.get_text("words") 返回的词列表
         cell_rect: {'x0': float, 'y0': float, 'x1': float, 'y1': float}
         tolerance: 边界容忍度
+        debug_log: 是否输出详细日志
 
     Returns:
         单元格内的文字
@@ -332,9 +470,14 @@ def extract_cell_text(words: List[Tuple], cell_rect: Dict, tolerance: float = 2)
             cell_rect['y0'] - tolerance <= w[1] and
             w[3] <= cell_rect['y1'] + tolerance):
             cell_words.append((w[1], w[4]))  # (y, text)
+            if debug_log:
+                logger.debug(f"[CELL-EXTRACT]       Word in cell: '{w[4]}' at ({w[0]:.2f}, {w[1]:.2f}, {w[2]:.2f}, {w[3]:.2f})")
 
     cell_words.sort()
     result = ' '.join(text for _, text in cell_words).strip()
+
+    if debug_log and cell_words:
+        logger.debug(f"[CELL-EXTRACT]     Cell [{cell_rect['x0']:.2f}, {cell_rect['y0']:.2f}, {cell_rect['x1']:.2f}, {cell_rect['y1']:.2f}] -> '{result}' ({len(cell_words)} words)")
 
     # 去除换行导致的多余空格：如果文本中包含空格，且空格前后都是字母/数字（不含标点），则去除空格
     # 示例："ACCUMULA TOR" -> "ACCUMULATOR", "100 200" -> "100200", "RFGD00099 03" -> "RFGD0009903"
@@ -477,10 +620,10 @@ def extract_invoice_goods_items(
             # 第 1 页：识别表头和列定义
             page = doc.load_page(pages_to_process[0] - 1)  # PyMuPDF 使用 0-based 索引
 
-            # 查找表头行
-            header_y = find_header_row_y(page)
-            if not header_y:
-                logger.warning("Cannot find header row, falling back to 7-line algorithm")
+            # 查找表头区域边界（新方法）
+            header_region = find_header_region_bounds(page)
+            if not header_region:
+                logger.warning("Cannot find header region, falling back to 7-line algorithm")
                 doc.close()
                 pdf_path = None  # 回退到旧算法
             else:
@@ -491,8 +634,8 @@ def extract_invoice_goods_items(
                     doc.close()
                     pdf_path = None  # 回退到旧算法
                 else:
-                    # 识别列
-                    columns = identify_columns_from_config(page, header_y, column_fields)
+                    # 识别列（使用新方法）
+                    columns = identify_columns_from_config(page, column_fields, header_region)
                     if not columns:
                         logger.warning("Cannot identify columns, falling back to 7-line algorithm")
                         doc.close()
@@ -517,9 +660,9 @@ def extract_invoice_goods_items(
                             desc_page = rows[goods_idx]['page']
                             desc_y = rows[goods_idx]['y0']
                         else:
-                            # 回退：在第一页查找
+                            # 回退：在第一页查找，使用表头区域下边界
                             desc_page = pages_to_process[0]
-                            desc_y = header_y
+                            desc_y = header_region[1]  # 使用lower_y（下边界）
 
                         if subtotal_idx and rows and subtotal_idx < len(rows):
                             subtotal_page = rows[subtotal_idx]['page']
@@ -553,23 +696,47 @@ def extract_invoice_goods_items(
                         if not hs_code:
                             warnings.append(f"[WARNING] Goods '{desc_of_goods}' at block {block_idx} does not have H.S Code!")
 
+                        # 确定 block 的实际结束位置：下一个 DESCRIPTION（如果存在）
+                        block_end_y = subtotal_y
+                        block_end_page = subtotal_page
+
+                        if block_idx < len(all_regions):
+                            # 有下一个 block，用下一个 DESCRIPTION 作为当前 block 的结束
+                            next_desc_page, next_desc_y, _, _ = all_regions[block_idx]
+                            block_end_y = next_desc_y
+                            block_end_page = next_desc_page
+                            logger.debug(f"[BLOCK-BOUNDARY] Block {block_idx}: desc_y={desc_y:.2f}, next_desc_y={next_desc_y:.2f} (use next DESCRIPTION as boundary)")
+                        else:
+                            logger.debug(f"[BLOCK-BOUNDARY] Block {block_idx}: desc_y={desc_y:.2f}, subtotal_y={subtotal_y:.2f} (last block, use SUB TOTAL)")
+
                         # 提取矩形和文字（处理跨页情况）
-                        if desc_page == subtotal_page:
+                        if desc_page == block_end_page:
                             # 同页：直接提取
                             page_obj = doc.load_page(desc_page - 1)
                             rectangles = extract_table_rectangles(page_obj)
                             words = page_obj.get_text("words")
 
-                            # 数据区域：DESCRIPTION 下方 10px 到 SUB TOTAL 上方 10px
-                            data_start_y = desc_y + 10
-                            data_end_y = subtotal_y - 10
+                            # 提取横线（DESCRIPTION 到 block_end 之间）
+                            horizontal_lines = extract_horizontal_lines(rectangles, desc_y, block_end_y)
+                            logger.info(f"[ROW-EXTRACT] Block {block_idx}: found {len(horizontal_lines)} horizontal lines (desc_y={desc_y:.2f}, block_end_y={block_end_y:.2f})")
 
-                            # 聚类数据行
-                            data_rows = cluster_rows_by_y(rectangles, data_start_y, data_end_y)
+                            # 使用横线分隔行
+                            # 横线说明：第一条横线 = DESCRIPTION 行的下边界（也是第一行数据的上边界）
+                            # 相邻两条横线之间 = 一行数据
+                            if len(horizontal_lines) >= 2:
+                                data_rows = cluster_rows_by_horizontal_lines(rectangles, horizontal_lines)
+                                logger.info(f"[ROW-EXTRACT] Block {block_idx}: extracted {len(data_rows)} data rows using horizontal lines")
+                            else:
+                                # 回退到旧方法
+                                logger.warning(f"[ROW-EXTRACT] Block {block_idx}: insufficient horizontal lines ({len(horizontal_lines)}), falling back to y-clustering")
+                                data_start_y = desc_y + 5
+                                data_end_y = block_end_y - 5
+                                data_rows = cluster_rows_by_y(rectangles, data_start_y, data_end_y)
 
                             # 解析每行（同页情况）
-                            for row_y, cells in data_rows:
+                            for row_idx, (row_y, cells) in enumerate(data_rows, start=1):
                                 cells.sort(key=lambda c: c['x0'])
+                                logger.debug(f"[ROW-EXTRACT] Block {block_idx}, Row {row_idx} at y={row_y:.2f}, {len(cells)} cells")
 
                                 # 提取各字段
                                 item_data = {
@@ -583,8 +750,9 @@ def extract_invoice_goods_items(
                                     'amount': '',
                                 }
 
-                                for cell in cells:
-                                    content = extract_cell_text(words, cell)
+                                for cell_idx, cell in enumerate(cells):
+                                    logger.debug(f"[CELL-EXTRACT]   Processing cell {cell_idx}: [{cell['x0']:.2f}, {cell['y0']:.2f}, {cell['x1']:.2f}, {cell['y1']:.2f}]")
+                                    content = extract_cell_text(words, cell, debug_log=True)
                                     if not content:
                                         continue
 
@@ -594,12 +762,16 @@ def extract_invoice_goods_items(
                                             item_data[field_name] += ' ' + content
                                         else:
                                             item_data[field_name] = content
+                                        logger.debug(f"[CELL-EXTRACT]     Assigned to column '{field_name}': '{content}'")
+                                    else:
+                                        logger.debug(f"[CELL-EXTRACT]     Cell at x={cell['x0']:.2f} not assigned to any column (field_name={field_name})")
 
                                 # 清理客户名
                                 item_data['customer'] = clean_text(item_data['customer'])
 
                                 # 验证：至少有 u11_code 或 sanhua_no
                                 if item_data['u11_code'] or item_data['sanhua_no']:
+                                    logger.debug(f"[ROW-EXTRACT]   Extracted item: u11={item_data['u11_code']}, customer={item_data['customer']}, sanhua_no={item_data['sanhua_no']}")
                                     all_items.append({
                                         "block_idx": block_idx,
                                         "hs_code": hs_code if hs_code else "",
@@ -622,24 +794,40 @@ def extract_invoice_goods_items(
                             words1 = page_obj1.get_text("words")
                             page_height1 = page_obj1.rect.height
 
-                            data_start_y1 = desc_y + 10
-                            data_end_y1 = page_height1
-                            rows1 = cluster_rows_by_y(rects1, data_start_y1, data_end_y1)
+                            # 提取第一页的横线
+                            h_lines1 = extract_horizontal_lines(rects1, desc_y, page_height1)
+                            if len(h_lines1) >= 2:
+                                rows1 = cluster_rows_by_horizontal_lines(rects1, h_lines1)
+                                logger.info(f"[ROW-EXTRACT] Block {block_idx}, Page {desc_page}: found {len(h_lines1)} horizontal lines, extracted {len(rows1)} rows")
+                            else:
+                                logger.warning(f"[ROW-EXTRACT] Block {block_idx}, Page {desc_page}: insufficient horizontal lines ({len(h_lines1)}), falling back")
+                                data_start_y1 = desc_y + 5
+                                data_end_y1 = page_height1
+                                rows1 = cluster_rows_by_y(rects1, data_start_y1, data_end_y1)
 
-                            # 第二页：从页顶到 subtotal_y
-                            page_obj2 = doc.load_page(subtotal_page - 1)
+                            # 第二页：从页顶到 block_end_y
+                            page_obj2 = doc.load_page(block_end_page - 1)
                             rects2 = extract_table_rectangles(page_obj2)
                             words2 = page_obj2.get_text("words")
 
-                            data_start_y2 = 0
-                            data_end_y2 = subtotal_y - 10
-                            rows2 = cluster_rows_by_y(rects2, data_start_y2, data_end_y2)
+                            # 提取第二页的横线
+                            h_lines2 = extract_horizontal_lines(rects2, 0, block_end_y)
+                            if len(h_lines2) >= 1:
+                                # 第二页没有 DESCRIPTION 行，直接使用所有横线
+                                rows2 = cluster_rows_by_horizontal_lines(rects2, h_lines2)
+                                logger.info(f"[ROW-EXTRACT] Block {block_idx}, Page {block_end_page}: found {len(h_lines2)} horizontal lines, extracted {len(rows2)} rows")
+                            else:
+                                logger.warning(f"[ROW-EXTRACT] Block {block_idx}, Page {block_end_page}: insufficient horizontal lines ({len(h_lines2)}), falling back")
+                                data_start_y2 = 0
+                                data_end_y2 = block_end_y - 5
+                                rows2 = cluster_rows_by_y(rects2, data_start_y2, data_end_y2)
 
-                            logger.info(f"Block {block_idx} crosses pages ({desc_page}→{subtotal_page}): extracted {len(rows1)} rows from page {desc_page}, {len(rows2)} rows from page {subtotal_page}")
+                            logger.info(f"Block {block_idx} crosses pages ({desc_page}→{block_end_page}): extracted {len(rows1)} rows from page {desc_page}, {len(rows2)} rows from page {block_end_page}")
 
                             # 处理第一页的行
-                            for row_y, cells in rows1:
+                            for row_idx, (row_y, cells) in enumerate(rows1, start=1):
                                 cells.sort(key=lambda c: c['x0'])
+                                logger.debug(f"[ROW-EXTRACT] Block {block_idx}, Page {desc_page} Row {row_idx} at y={row_y:.2f}, {len(cells)} cells")
 
                                 item_data = {
                                     'customer': '',
@@ -652,8 +840,9 @@ def extract_invoice_goods_items(
                                     'amount': '',
                                 }
 
-                                for cell in cells:
-                                    content = extract_cell_text(words1, cell)  # 使用 words1
+                                for cell_idx, cell in enumerate(cells):
+                                    logger.debug(f"[CELL-EXTRACT]   Processing cell {cell_idx}: [{cell['x0']:.2f}, {cell['y0']:.2f}, {cell['x1']:.2f}, {cell['y1']:.2f}]")
+                                    content = extract_cell_text(words1, cell, debug_log=True)  # 使用 words1
                                     if not content:
                                         continue
 
@@ -663,10 +852,14 @@ def extract_invoice_goods_items(
                                             item_data[field_name] += ' ' + content
                                         else:
                                             item_data[field_name] = content
+                                        logger.debug(f"[CELL-EXTRACT]     Assigned to column '{field_name}': '{content}'")
+                                    else:
+                                        logger.debug(f"[CELL-EXTRACT]     Cell at x={cell['x0']:.2f} not assigned to any column (field_name={field_name})")
 
                                 item_data['customer'] = clean_text(item_data['customer'])
 
                                 if item_data['u11_code'] or item_data['sanhua_no']:
+                                    logger.debug(f"[ROW-EXTRACT]   Extracted item: u11={item_data['u11_code']}, customer={item_data['customer']}, sanhua_no={item_data['sanhua_no']}")
                                     all_items.append({
                                         "block_idx": block_idx,
                                         "hs_code": hs_code if hs_code else "",
@@ -682,8 +875,9 @@ def extract_invoice_goods_items(
                                     })
 
                             # 处理第二页的行
-                            for row_y, cells in rows2:
+                            for row_idx, (row_y, cells) in enumerate(rows2, start=1):
                                 cells.sort(key=lambda c: c['x0'])
+                                logger.debug(f"[ROW-EXTRACT] Block {block_idx}, Page {subtotal_page} Row {row_idx} at y={row_y:.2f}, {len(cells)} cells")
 
                                 item_data = {
                                     'customer': '',
@@ -696,8 +890,9 @@ def extract_invoice_goods_items(
                                     'amount': '',
                                 }
 
-                                for cell in cells:
-                                    content = extract_cell_text(words2, cell)  # 使用 words2
+                                for cell_idx, cell in enumerate(cells):
+                                    logger.debug(f"[CELL-EXTRACT]   Processing cell {cell_idx}: [{cell['x0']:.2f}, {cell['y0']:.2f}, {cell['x1']:.2f}, {cell['y1']:.2f}]")
+                                    content = extract_cell_text(words2, cell, debug_log=True)  # 使用 words2
                                     if not content:
                                         continue
 
@@ -707,10 +902,14 @@ def extract_invoice_goods_items(
                                             item_data[field_name] += ' ' + content
                                         else:
                                             item_data[field_name] = content
+                                        logger.debug(f"[CELL-EXTRACT]     Assigned to column '{field_name}': '{content}'")
+                                    else:
+                                        logger.debug(f"[CELL-EXTRACT]     Cell at x={cell['x0']:.2f} not assigned to any column (field_name={field_name})")
 
                                 item_data['customer'] = clean_text(item_data['customer'])
 
                                 if item_data['u11_code'] or item_data['sanhua_no']:
+                                    logger.debug(f"[ROW-EXTRACT]   Extracted item: u11={item_data['u11_code']}, customer={item_data['customer']}, sanhua_no={item_data['sanhua_no']}")
                                     all_items.append({
                                         "block_idx": block_idx,
                                         "hs_code": hs_code if hs_code else "",
@@ -727,11 +926,16 @@ def extract_invoice_goods_items(
 
                     doc.close()
         except Exception as e:
-            logger.error(f"Table extraction failed: {e}, falling back to 7-line algorithm")
-            pdf_path = None  # 回退到旧算法
+            logger.error(f"Table extraction failed: {e}")
+            raise RuntimeError(f"Failed to extract invoice data: {e}")
 
-    # 如果未提供 PDF 或表格提取失败，使用固定 7 行算法
-    if not pdf_path:
+    else:
+        # PDF路径未提供，无法使用表格提取
+        logger.error("PDF path is required for table extraction")
+        raise ValueError("PDF path must be provided for invoice extraction")
+
+    # 旧的7行算法已移除，不再支持回退
+    if False:  # 保留代码结构，但永不执行
         for block_idx, (goods_idx, hs_code, desc_of_goods) in enumerate(goods_positions, start=1):
             # 检查是否缺少 HS Code
             if not hs_code:

@@ -47,6 +47,11 @@ def split_wide_lines(rows: List[Dict]) -> List[Dict]:
     for row in rows:
         width = row["x1"] - row["x0"]
 
+        # 跳过 DESCRIPTION OF GOODS 行（避免误拆分导致 HS CODE 丢失）
+        if "DESCRIPTION OF GOODS" in row["text"].upper():
+            result.append(row)
+            continue
+
         # 检测异常宽度（> 100px，正常单列 < 80px）
         if 100 < width < 200 and " " in row["text"]:
             # 按最后一个空格拆分

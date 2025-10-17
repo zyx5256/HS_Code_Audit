@@ -181,9 +181,9 @@ def run_auto(args) -> None:
         logger.info(f"[DEBUG] Level 1 (truncated): {len(rows)} lines -> {debug_file}")
         return  # level 1 只输出截断后数据，不执行后续处理
 
-    # 3. 预处理（拆分异常行高）
-    rows = split_abnormal_height_lines(rows)
-    rows = split_wide_lines(rows)
+    # 3. 预处理（不再使用拆分功能，避免误伤）
+    # rows = split_abnormal_height_lines(rows)
+    # rows = split_wide_lines(rows)
 
     # Debug: 输出 level 2 (split)
     if args.debug == 2:

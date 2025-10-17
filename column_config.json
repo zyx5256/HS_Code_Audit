@@ -1,12 +1,12 @@
 {
   "default": [
     "customer",
-    "order_no",
     "u11_code",
     "customer_no",
     "sanhua_no",
     "quantity",
     "unit_price",
-    "amount"
+    "amount",
+    "order_no"
   ]
 }
