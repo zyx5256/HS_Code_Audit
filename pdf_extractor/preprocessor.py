@@ -240,6 +240,15 @@ def merge_adjacent_lines(rows: List[Dict]) -> List[Dict]:
             # 计算垂直间距
             vertical_overlap = next_row["y0"] >= current["y0"] and next_row["y0"] - current["y1"] <= 3
 
+            # 计算 y 坐标中心点（检查是否在同一行）
+            c_y_center = (current["y0"] + current["y1"]) / 2
+            n_y_center = (next_row["y0"] + next_row["y1"]) / 2
+            same_horizontal_line = abs(n_y_center - c_y_center) < 1
+
+            # 如果在同一水平线上（y 中心点差异 < 1px），不合并（它们是同一行的不同单元格）
+            if same_horizontal_line:
+                break
+
             # 计算水平位置关系
             c_left, c_right = current["x0"], current["x1"]
             n_left, n_right = next_row["x0"], next_row["x1"]

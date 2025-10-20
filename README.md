@@ -527,4 +527,53 @@ if not vertical_lines:
 **关键代码**：
 - `extractor.py:179-257` - identify_columns_from_header（基于竖线）
 - `extractor.py:260-293` - cluster_rows_by_y（过滤异常宽度）
-- to
+
+---
+
+**修复时间**：2025-10-20
+
+**问题发现**：
+- SHSC-DDC2509184-P.pdf 的 Block 1（以及其他多个blocks）的 subtotal 和 total_usd 字段为空字符串
+- 导致校验报错：`subtotal mismatch! Expected: 0.00, Calculated: 930.00`
+
+**根本原因**：
+`merge_adjacent_lines` 函数错误地将**同一水平线上的两个单元格**合并了：
+- 原始数据（raw CSV）：
+  ```
+  1,68,250.56,305.31,259.77,310.47,930              ← 单独的单元格（subtotal值）
+  1,69,275.64,305.31,309.04,310.47,TOTAL(USD):      ← 单独的单元格（标签）
+  ```
+  两者 y 坐标完全相同（y0=305.31, y1=310.47），说明在同一水平线上
+
+- 错误合并后：
+  ```
+  1,35,250.56,305.31,309.04,310.47,930TOTAL(USD):   ← 被合并了！
+  ```
+
+- 后果：提取 SUBTOTAL 的正则表达式无法匹配 `930TOTAL(USD):` 这种格式
+
+**修复方案**：
+在 `preprocessor.py:merge_adjacent_lines()` 中增加水平线检查（第243-250行）：
+```python
+# 计算 y 坐标中心点（检查是否在同一行）
+c_y_center = (current["y0"] + current["y1"]) / 2
+n_y_center = (next_row["y0"] + next_row["y1"]) / 2
+same_horizontal_line = abs(n_y_center - c_y_center) < 1
+
+# 如果在同一水平线上（y 中心点差异 < 1px），不合并（它们是同一行的不同单元格）
+if same_horizontal_line:
+    break
+```
+
+**逻辑说明**：
+- `merge_adjacent_lines` 的目的是合并**垂直堆叠**的换行拆分文本（如 "YCV5-43GTLA-1-" + "U3"）
+- 不应该合并**水平相邻**的同一行内的不同单元格（如 "930" + "TOTAL(USD):"）
+- 通过 y 坐标中心点差异判断：< 1px 说明在同一水平线，应跳过合并
+
+**修复效果**：
+- ✅ Block 1 正确提取：subtotal=930, total_usd=10815.90
+- ✅ 所有 12 个 blocks 的 subtotal 和 total_usd 都正确提取
+- ✅ validation warnings 仅限于预期的计算检查（非字段缺失）
+
+**关键代码**：
+- `preprocessor.py:240-250` - merge_adjacent_lines（增加同一水平线检查）
