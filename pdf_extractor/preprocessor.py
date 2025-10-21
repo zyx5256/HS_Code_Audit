@@ -313,8 +313,12 @@ def clean_text(text: str) -> str:
     # 替换中文括号为英文括号
     text = text.replace("（", "(").replace("）", ")")
 
-    # 去掉括号前后的空格
+    # 替换中文冒号为英文冒号
+    text = text.replace("：", ":")
+
+    # 去掉前后的空格
     text = text.replace(" (", "(").replace("( ", "(")
     text = text.replace(" )", ")").replace(") ", ")")
+    text = text.replace(" :", ":").replace(": ", ":")
 
     return text

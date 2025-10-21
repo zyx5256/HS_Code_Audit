@@ -96,13 +96,14 @@ def save_errors_to_csv(errors: list, output_path: str):
 
     with open(output_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.DictWriter(f, fieldnames=[
+            'Error Type',
+            'Final Customers',
             'U11 Code',
             'Block Index',
             'Item Index',
             'PDF HScode',
             'Excel HScode',
-            'Excel Row',
-            'Error Type'
+            'Excel Row'
         ])
         writer.writeheader()
 
@@ -111,13 +112,14 @@ def save_errors_to_csv(errors: list, output_path: str):
             is_extraction_failed = error.error_type == 'extraction_failed'
 
             row = {
+                'Error Type': error.error_type,
+                'Final Customers': getattr(error, 'final_customers', ''),
                 'U11 Code': '' if (is_validation and error.u11_code == 'N/A') or is_extraction_failed else error.u11_code,
                 'Block Index': error.block_index if error.block_index > 0 else '',
                 'Item Index': error.item_index if error.item_index > 0 else '',
                 'PDF HScode': '' if is_validation or is_extraction_failed else error.pdf_hscode,
                 'Excel HScode': '' if (is_validation or error.error_type == 'not_found' or is_extraction_failed) else error.excel_hscode,
-                'Excel Row': error.excel_row or '',
-                'Error Type': error.error_type
+                'Excel Row': error.excel_row or ''
             }
             writer.writerow(row)
 
@@ -369,56 +371,41 @@ def main():
         if pdf_validation_errors:
             logger.warning(f"PDF validation found {len(pdf_validation_errors)} error(s)")
 
-        # 5. 对比（跳过validation失败的item）
+        # 5. 对比（不跳过任何item）
         logger.info("Comparing PDF data with Excel mapping...")
-        mismatch_errors, not_found_errors = compare_hscode(
+        mismatch_errors, not_found_errors, ok_results = compare_hscode(
             pdf_data,
-            excel_mapping,
-            validation_errors=pdf_validation_errors
+            excel_mapping
         )
 
         # 6. 输出结果
-        all_errors = mismatch_errors + not_found_errors + pdf_validation_errors
+        # all_errors只包含item级别的错误（mismatch和not_found）
+        # validation errors已经在pdf_data中，不需要重复输出到result.csv
+        all_errors = mismatch_errors + not_found_errors
+        all_results = all_errors + ok_results  # 所有item结果（错误+OK）
 
         print(f"\n{'='*70}")
         print(f"Audit Summary:")
         print(f"  Total items: {total_items}")
-        print(f"  PDF validation errors: {len(pdf_validation_errors)}")
         print(f"  HScode mismatches: {len(mismatch_errors)}")
         print(f"  Not found in Excel: {len(not_found_errors)}")
         print(f"  Total errors: {len(all_errors)}")
+        if pdf_validation_errors:
+            print(f"  PDF validation errors: {len(pdf_validation_errors)} (see PDF output for details)")
         print(f"{'='*70}")
 
-        # 保存 CSV 到 output 目录
+        # 保存 CSV 到 output 目录（所有结果，包括OK的）
         csv_path = os.path.join(output_dir, "result.csv")
+        save_errors_to_csv(all_results, csv_path)
 
         if all_errors:
-            # 打印错误
-            print_errors(mismatch_errors, not_found_errors, pdf_validation_errors)
-
-            # 保存 CSV（包含错误数据）
-            save_errors_to_csv(all_errors, csv_path)
-            print(f"\nError report saved to: {csv_path}")
-
+            # 打印错误（只打印item级别的错误）
+            print_errors(mismatch_errors, not_found_errors, [])
+            print(f"\nResult saved to: {csv_path}")
             sys.exit(1)  # 有错误时返回非零状态码
         else:
             print("\n✓ Verification successful! All HScodes match.")
-
-            # 保存空 CSV（只有表头）
-            with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.DictWriter(f, fieldnames=[
-                    'U11 Code',
-                    'Block Index',
-                    'Item Index',
-                    'PDF HScode',
-                    'Excel HScode',
-                    'Excel Row',
-                    'Error Type'
-                ])
-                writer.writeheader()
-            logger.info(f"Result saved to: {csv_path}")
             print(f"\nResult saved to: {csv_path}")
-
             sys.exit(0)
 
     except Exception as e:

@@ -577,3 +577,84 @@ if same_horizontal_line:
 
 **关键代码**：
 - `preprocessor.py:240-250` - merge_adjacent_lines（增加同一水平线检查）
+
+---
+
+**修复时间**：2025-10-21
+
+**问题1：HS Code提取失败**
+- **现象**：SHVDDC2508125CUSOF.pdf 的部分block的HS Code为空
+- **根本原因**：PDF中使用了**全角冒号"："**（Unicode `\uff1a`）而不是半角冒号":"
+  - `parse_invoice_structure` 函数在检查 `":" in line` 时无法匹配全角冒号
+  - 导致HS Code提取逻辑被跳过
+- **修复方案**：
+  ```python
+  # extractor.py:562 - parse_invoice_structure
+  from .preprocessor import clean_text
+
+  for i, line in enumerate(lines):
+      line = clean_text(line)  # 先清理，替换全角冒号为半角
+      line_upper = line.upper()
+  ```
+- **修复效果**：
+  - ✅ 所有5个block的HS Code都正确提取
+  - ✅ 支持全角和半角冒号混用的PDF
+
+**问题2：只提取3个block，丢失block 4和5**
+- **现象**：程序检测到5个table regions，但最终只输出3个blocks
+- **根本原因**：Block 4和5所在的PDF区域**只有网格线（横线+竖线），没有单元格矩形**
+  - 程序期望有单元格矩形才能提取文字
+  - 虽然有回退逻辑（用竖线构造虚拟单元格），但只在 `row_cells为空` 时触发
+  - Block 4和5有1个单元格（右侧的金额），所以回退逻辑没触发，左侧数据全丢失
+- **修复方案**：
+  ```python
+  # extractor.py:419 - cluster_rows_by_horizontal_lines
+  # 从：if not row_cells and columns:
+  # 改为：if len(row_cells) < 5 and columns:
+  ```
+  当单元格数量少于5个时，用竖线构造完整的虚拟单元格
+- **修复效果**：
+  - ✅ 成功提取所有5个blocks
+  - ✅ Block 4和5的数据完整提取
+  - ✅ 支持纯网格线表格（无单元格矩形）
+
+**功能改进：result.csv输出逻辑重构**
+- **需求**：
+  1. 输出所有货物行（包括OK的和错误的）
+  2. 调整列顺序：Error Type第一列，添加Final Customers列
+  3. 移除跳过逻辑，所有item都输出
+  4. validation errors不输出到result.csv（已在pdf_data中）
+
+- **实施方案**：
+  1. **comparator.py修改**：
+     - `HSCodeError` 类添加 `final_customers` 参数
+     - `compare_hscode` 函数返回3个列表：`(mismatch_errors, not_found_errors, ok_results)`
+     - 比对成功时创建 `error_type='OK'` 的记录
+     - 移除所有跳过逻辑（validation失败、缺少u11_code的都输出）
+
+  2. **audit.py修改**：
+     - `save_errors_to_csv` 调整列顺序为：
+       ```
+       Error Type, Final Customers, U11 Code, Block Index, Item Index,
+       PDF HScode, Excel HScode, Excel Row
+       ```
+     - `all_results = all_errors + ok_results` 包含所有item
+     - 不再将 `pdf_validation_errors` 添加到result.csv
+
+  3. **移除normalize_hscode功能**：
+     - 删除 `normalize_hscode` 参数
+     - HS Code必须完全一致（包括点号）才算匹配
+
+- **修复效果**：
+  - ✅ result.csv包含所有货物行（每个item一行）
+  - ✅ Error Type可能的值：OK, mismatch, not_found, missing_u11_code
+  - ✅ 列顺序更合理，Final Customers可快速识别货物
+  - ✅ validation errors只在pdf_data中，不重复输出
+  - ✅ HS Code比对更严格（点号也必须一致）
+
+**关键代码**：
+- `extractor.py:562-567` - parse_invoice_structure（添加clean_text预处理）
+- `extractor.py:419-428` - cluster_rows_by_horizontal_lines（改进回退触发条件）
+- `comparator.py:94-202` - compare_hscode（返回ok_results，移除跳过逻辑）
+- `audit.py:97-126` - save_errors_to_csv（调整列顺序，添加Final Customers）
+- `audit.py:376-407` - main（合并所有结果输出）

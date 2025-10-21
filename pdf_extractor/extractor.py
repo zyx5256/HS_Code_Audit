@@ -73,8 +73,14 @@ def truncate_at_marker(rows: List[Dict], marker: str) -> List[Dict]:
         marker="SAY U.S.DOLLARS"
         遇到此行后，后续的银行信息等都会被过滤掉
     """
+    # 预处理marker：去掉空格和点号
+    normalized_marker = marker.upper().replace(" ", "").replace(".", "")
+
     for i, row in enumerate(rows):
-        if marker.upper() in row["text"].upper():
+        # 预处理row文本：去掉空格和点号
+        normalized_text = row["text"].upper().replace(" ", "").replace(".", "")
+
+        if normalized_marker in normalized_text:
             logger.info(f"Truncated at row {i+1} (page {row['page']}, index {row['index']}): '{row['text'][:50]}...'")
             return rows[:i]
     return rows
@@ -378,7 +384,7 @@ def extract_horizontal_lines(rectangles: List[Dict], start_y: float, end_y: floa
     return y_coords
 
 
-def cluster_rows_by_horizontal_lines(rectangles: List[Dict], horizontal_lines: List[float]) -> List[Tuple[float, List[Dict]]]:
+def cluster_rows_by_horizontal_lines(rectangles: List[Dict], horizontal_lines: List[float], columns: Optional[Dict[str, Dict]] = None) -> List[Tuple[float, List[Dict]]]:
     """
     使用横线分隔行（更精确的方法）
 
@@ -387,6 +393,7 @@ def cluster_rows_by_horizontal_lines(rectangles: List[Dict], horizontal_lines: L
     Args:
         rectangles: 矩形列表
         horizontal_lines: 横线 y 坐标列表（已排序）
+        columns: 列定义字典（可选，用于纯网格线表格的回退）
 
     Returns:
         [(row_y, [rect, ...]), ...]
@@ -406,6 +413,19 @@ def cluster_rows_by_horizontal_lines(rectangles: List[Dict], horizontal_lines: L
         row_cells = [r for r in rectangles
                      if upper_line <= r['y0'] <= lower_line and
                      5 < (r['x1'] - r['x0']) < 150]
+
+        # 回退：如果单元格矩形太少（< 5个），用竖线构造虚拟单元格（纯网格线表格）
+        # 这样可以处理只有网格线没有单元格矩形的PDF
+        if len(row_cells) < 5 and columns:
+            logger.debug(f"[ROW-EXTRACT] Only {len(row_cells)} cell rectangles found between y={upper_line:.2f} and y={lower_line:.2f}, using columns to construct virtual cells")
+            row_cells = []
+            for field_name, col_info in columns.items():
+                row_cells.append({
+                    'x0': col_info['x0'],
+                    'y0': upper_line,
+                    'x1': col_info['x1'],
+                    'y1': lower_line
+                })
 
         if row_cells:
             rows.append((row_y, row_cells))
@@ -540,7 +560,11 @@ def parse_invoice_structure(lines: List[str]) -> Tuple[List[Tuple[int, str, str]
     goods_positions = []
     subtotal_positions = []
 
+    from .preprocessor import clean_text
+
     for i, line in enumerate(lines):
+        # 先清理文本（替换全角冒号等）
+        line = clean_text(line)
         line_upper = line.upper()
 
         if "DESCRIPTION OF GOODS" in line_upper:
@@ -556,13 +580,20 @@ def parse_invoice_structure(lines: List[str]) -> Tuple[List[Tuple[int, str, str]
                     name_and_code = rest.upper().split("H.S CODE:")
                     desc_of_goods = name_and_code[0].strip()
                     if len(name_and_code) > 1:
-                        hs_code = name_and_code[1].strip().split()[0] if name_and_code[1].strip() else ""
+                        # 取第一个空格之前的内容
+                        code_part = name_and_code[1].strip()
+                        if code_part:
+                            # 找第一个空格的位置
+                            space_idx = code_part.find(' ')
+                            if space_idx > 0:
+                                hs_code = code_part[:space_idx]
+                            else:
+                                # 没有空格，全部都是HS Code
+                                hs_code = code_part
+                        else:
+                            hs_code = ""
                 else:
                     desc_of_goods = rest.strip()
-
-            # 清理货物描述（调用 preprocessor 的功能）
-            from .preprocessor import clean_text
-            desc_of_goods = clean_text(desc_of_goods)
 
             goods_positions.append((i, hs_code, desc_of_goods))
 
@@ -724,7 +755,7 @@ def extract_invoice_goods_items(
                             # 横线说明：第一条横线 = DESCRIPTION 行的下边界（也是第一行数据的上边界）
                             # 相邻两条横线之间 = 一行数据
                             if len(horizontal_lines) >= 2:
-                                data_rows = cluster_rows_by_horizontal_lines(rectangles, horizontal_lines)
+                                data_rows = cluster_rows_by_horizontal_lines(rectangles, horizontal_lines, columns)
                                 logger.info(f"[ROW-EXTRACT] Block {block_idx}: extracted {len(data_rows)} data rows using horizontal lines")
                             else:
                                 # 回退到旧方法
@@ -770,7 +801,7 @@ def extract_invoice_goods_items(
                                 item_data['customer'] = clean_text(item_data['customer'])
 
                                 # 验证：至少有 u11_code 或 sanhua_no
-                                if item_data['u11_code'] or item_data['sanhua_no']:
+                                if item_data['u11_code']:
                                     logger.debug(f"[ROW-EXTRACT]   Extracted item: u11={item_data['u11_code']}, customer={item_data['customer']}, sanhua_no={item_data['sanhua_no']}")
                                     all_items.append({
                                         "block_idx": block_idx,
@@ -785,6 +816,8 @@ def extract_invoice_goods_items(
                                         "unit_price": item_data['unit_price'],
                                         "amount": item_data['amount']
                                     })
+                                else:
+                                    logger.warning(f"[ROW-EXTRACT] Block {block_idx}, Row {row_idx}: Skipped (no u11_code). customer={item_data['customer']}, sanhua_no={item_data['sanhua_no']}")
 
                         else:
                             # 跨页：分别提取第一页和第二页的数据行
@@ -797,7 +830,7 @@ def extract_invoice_goods_items(
                             # 提取第一页的横线
                             h_lines1 = extract_horizontal_lines(rects1, desc_y, page_height1)
                             if len(h_lines1) >= 2:
-                                rows1 = cluster_rows_by_horizontal_lines(rects1, h_lines1)
+                                rows1 = cluster_rows_by_horizontal_lines(rects1, h_lines1, columns)
                                 logger.info(f"[ROW-EXTRACT] Block {block_idx}, Page {desc_page}: found {len(h_lines1)} horizontal lines, extracted {len(rows1)} rows")
                             else:
                                 logger.warning(f"[ROW-EXTRACT] Block {block_idx}, Page {desc_page}: insufficient horizontal lines ({len(h_lines1)}), falling back")
@@ -814,7 +847,7 @@ def extract_invoice_goods_items(
                             h_lines2 = extract_horizontal_lines(rects2, 0, block_end_y)
                             if len(h_lines2) >= 1:
                                 # 第二页没有 DESCRIPTION 行，直接使用所有横线
-                                rows2 = cluster_rows_by_horizontal_lines(rects2, h_lines2)
+                                rows2 = cluster_rows_by_horizontal_lines(rects2, h_lines2, columns)
                                 logger.info(f"[ROW-EXTRACT] Block {block_idx}, Page {block_end_page}: found {len(h_lines2)} horizontal lines, extracted {len(rows2)} rows")
                             else:
                                 logger.warning(f"[ROW-EXTRACT] Block {block_idx}, Page {block_end_page}: insufficient horizontal lines ({len(h_lines2)}), falling back")

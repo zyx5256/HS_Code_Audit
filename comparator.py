@@ -19,7 +19,8 @@ class HSCodeError:
         pdf_hscode: str,
         excel_hscode: str = None,
         excel_row: int = None,
-        error_type: str = "mismatch"  # "mismatch" 或 "not_found"
+        error_type: str = "mismatch",  # "mismatch", "not_found", "OK"
+        final_customers: str = ""
     ):
         self.u11_code = u11_code
         self.block_index = block_index
@@ -28,6 +29,7 @@ class HSCodeError:
         self.excel_hscode = excel_hscode
         self.excel_row = excel_row
         self.error_type = error_type
+        self.final_customers = final_customers
 
     def __str__(self):
         if self.error_type == "not_found":
@@ -91,31 +93,21 @@ class HSCodeError:
 
 def compare_hscode(
     pdf_data: Dict,
-    excel_mapping: Dict,
-    normalize_hscode: bool = True,
-    validation_errors: List = None
-) -> Tuple[List[HSCodeError], List[HSCodeError]]:
+    excel_mapping: Dict
+) -> Tuple[List[HSCodeError], List[HSCodeError], List[HSCodeError]]:
     """
     对比 PDF 发票数据和 Excel HScode 映射
 
     参数:
         pdf_data: PDF 提取的发票数据（包含 goods_blocks）
         excel_mapping: Excel 提取的映射字典（u11_code -> {hs_code, row}）
-        normalize_hscode: 是否规范化 HScode 格式（去除点号后比较）
-        validation_errors: PDF校验错误列表（这些item会被跳过）
 
     返回:
-        (不匹配错误列表, 未找到错误列表)
+        (不匹配错误列表, 未找到错误列表, OK结果列表)
     """
     mismatch_errors = []
     not_found_errors = []
-
-    # 收集validation失败的(block_index, item_index)
-    skip_items = set()
-    if validation_errors:
-        for err in validation_errors:
-            if err.error_type == 'validation_item':  # 只跳过item级校验错误
-                skip_items.add((err.block_index, err.item_index))
+    ok_results = []
 
     goods_blocks = pdf_data.get('goods_blocks', [])
 
@@ -129,15 +121,21 @@ def compare_hscode(
             # item_index 从 1 开始
             item_index = item_idx + 1
 
-            # 跳过validation失败的item
-            if (block_index, item_index) in skip_items:
-                logger.info(f"Skipping Block {block_index} Item {item_index} due to validation error")
-                continue
-
             u11_code = item.get('u11_code', '').strip()
+            final_customers = item.get('final_customers', '')
 
+            # 如果缺少u11_code，标记为错误但仍然输出
             if not u11_code:
                 logger.warning(f"Block {block_index} Item {item_index} 缺少 u11_code")
+                error = HSCodeError(
+                    u11_code='',
+                    block_index=block_index,
+                    item_index=item_index,
+                    pdf_hscode=pdf_hscode,
+                    error_type="missing_u11_code",
+                    final_customers=final_customers
+                )
+                not_found_errors.append(error)
                 continue
 
             # 在 Excel 映射中查找
@@ -148,7 +146,8 @@ def compare_hscode(
                     block_index=block_index,
                     item_index=item_index,
                     pdf_hscode=pdf_hscode,
-                    error_type="not_found"
+                    error_type="not_found",
+                    final_customers=item.get('final_customers', '')
                 )
                 not_found_errors.append(error)
                 continue
@@ -157,19 +156,11 @@ def compare_hscode(
             excel_hscode = excel_info['hs_code']
             excel_row = excel_info['row']
 
-            # 比较 HScode
+            # 比较 HScode（必须完全一致，包括点号）
             pdf_hs = pdf_hscode.strip()
             excel_hs = excel_hscode.strip()
 
-            # 可选：规范化格式（去除点号）
-            if normalize_hscode:
-                pdf_hs_normalized = pdf_hs.replace('.', '')
-                excel_hs_normalized = excel_hs.replace('.', '')
-            else:
-                pdf_hs_normalized = pdf_hs
-                excel_hs_normalized = excel_hs
-
-            if pdf_hs_normalized != excel_hs_normalized:
+            if pdf_hs != excel_hs:
                 error = HSCodeError(
                     u11_code=u11_code,
                     block_index=block_index,
@@ -177,12 +168,26 @@ def compare_hscode(
                     pdf_hscode=pdf_hscode,
                     excel_hscode=excel_hscode,
                     excel_row=excel_row,
-                    error_type="mismatch"
+                    error_type="mismatch",
+                    final_customers=item.get('final_customers', '')
                 )
                 mismatch_errors.append(error)
                 logger.error(str(error))
+            else:
+                # 比对成功，添加OK结果
+                ok_result = HSCodeError(
+                    u11_code=u11_code,
+                    block_index=block_index,
+                    item_index=item_index,
+                    pdf_hscode=pdf_hscode,
+                    excel_hscode=excel_hscode,
+                    excel_row=excel_row,
+                    error_type="OK",
+                    final_customers=item.get('final_customers', '')
+                )
+                ok_results.append(ok_result)
 
-    return mismatch_errors, not_found_errors
+    return mismatch_errors, not_found_errors, ok_results
 
 
 def load_json(file_path: str) -> Dict:
