@@ -97,10 +97,10 @@ def save_errors_to_csv(errors: list, output_path: str):
     with open(output_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.DictWriter(f, fieldnames=[
             'Error Type',
-            'Final Customers',
-            'U11 Code',
             'Block Index',
             'Item Index',
+            'Final Customers',
+            'U11 Code',
             'PDF HScode',
             'Excel HScode',
             'Excel Row'

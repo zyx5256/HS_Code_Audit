@@ -11,6 +11,7 @@
 import logging
 import json
 import os
+import sys
 from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 import fitz  # PyMuPDF - 用于表格提取
@@ -30,9 +31,31 @@ def load_column_config(config_path: str = None, config_key: str = "default") -> 
         列字段名列表，如 ["customer", "order_no", ...]
     """
     if config_path is None:
-        # 默认配置文件路径：与 extractor.py 同目录下的 ../column_config.json
+        # 默认配置文件路径：尝试多个位置（支持打包环境）
+        search_paths = []
+
+        # 1. 当前工作目录（GUI 创建配置文件的位置）
+        search_paths.append(os.path.join(os.getcwd(), "column_config.json"))
+
+        # 2. exe 所在目录（仅在打包环境下）
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(sys.executable)
+            search_paths.append(os.path.join(exe_dir, "column_config.json"))
+
+        # 3. __file__ 的父目录（开发环境）
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(current_dir, "..", "column_config.json")
+        search_paths.append(os.path.join(current_dir, "..", "column_config.json"))
+
+        # 查找第一个存在的文件
+        config_path = None
+        for path in search_paths:
+            if os.path.exists(path):
+                config_path = path
+                break
+
+        if config_path is None:
+            logger.error(f"Column config file not found in any of: {search_paths}")
+            return []
 
     if not os.path.exists(config_path):
         logger.error(f"Column config file not found: {config_path}")
